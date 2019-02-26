@@ -7,6 +7,8 @@ verify_ssl = true
 
 [packages]
 flask = "*"
+simplejson = "*"
+requests-futures = "*"
 
 [requires]
 python_version = "3.7"
