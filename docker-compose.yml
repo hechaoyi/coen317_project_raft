@@ -2,6 +2,8 @@ version: '3'
 services:
   r1:
     build: .
+    ports:
+      - 81:80
     volumes:
       - ./src:/app
     environment:
@@ -9,6 +11,8 @@ services:
       PEERS: 'r2,r3,r4,r5'
   r2:
     image: raft_r1
+    ports:
+      - 82:80
     volumes:
       - ./src:/app
     environment:
@@ -16,6 +20,8 @@ services:
       PEERS: 'r1,r3,r4,r5'
   r3:
     image: raft_r1
+    ports:
+      - 83:80
     volumes:
       - ./src:/app
     environment:
@@ -23,6 +29,8 @@ services:
       PEERS: 'r1,r2,r4,r5'
   r4:
     image: raft_r1
+    ports:
+      - 84:80
     volumes:
       - ./src:/app
     environment:
@@ -30,6 +38,8 @@ services:
       PEERS: 'r1,r2,r3,r5'
   r5:
     image: raft_r1
+    ports:
+      - 85:80
     volumes:
       - ./src:/app
     environment:
