@@ -2,6 +2,7 @@ version: '3'
 services:
   r1:
     build: .
+    image: raft
     ports:
       - 81:80
     volumes:
@@ -10,7 +11,7 @@ services:
       IDENTITY: 'r1'
       PEERS: 'r2,r3,r4,r5'
   r2:
-    image: raft_r1
+    image: raft
     ports:
       - 82:80
     volumes:
@@ -19,7 +20,7 @@ services:
       IDENTITY: 'r2'
       PEERS: 'r1,r3,r4,r5'
   r3:
-    image: raft_r1
+    image: raft
     ports:
       - 83:80
     volumes:
@@ -28,7 +29,7 @@ services:
       IDENTITY: 'r3'
       PEERS: 'r1,r2,r4,r5'
   r4:
-    image: raft_r1
+    image: raft
     ports:
       - 84:80
     volumes:
@@ -37,7 +38,7 @@ services:
       IDENTITY: 'r4'
       PEERS: 'r1,r2,r3,r5'
   r5:
-    image: raft_r1
+    image: raft
     ports:
       - 85:80
     volumes:
