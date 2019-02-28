@@ -31,7 +31,7 @@ def append_entries():
     term, success = raft.received_append_entries(
         int(request.form['term']), request.form['leaderId'],
         int(request.form['prevLogIndex']), int(request.form['prevLogTerm']),
-        json.loads(request.form['entries']))
+        json.loads(request.form['entries']), int(request.form['leaderCommit']))
     return jsonify({'term': term, 'success': success})
 
 

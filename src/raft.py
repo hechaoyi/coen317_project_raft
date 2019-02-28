@@ -24,10 +24,12 @@ class Raft:
         self.voted_for = None
         self.leader_id = None
         self.logs = []
+        self.commit_index = -1
 
         self.session = None
         self.futures = None
         self.next_indexes = None
+        self.match_indexes = None
 
         self.identity = identity
         self.peers = list(peers)
@@ -76,6 +78,8 @@ class Raft:
                             if result.get('success', False):
                                 self.next_indexes[future.peer] = max(
                                     self.next_indexes[future.peer], future.next_index)
+                                self.match_indexes[future.peer] = max(
+                                    self.match_indexes[future.peer], future.next_index - 1)
                             else:
                                 self.next_indexes[future.peer] = min(
                                     self.next_indexes[future.peer], future.from_index - 1)
@@ -85,7 +89,13 @@ class Raft:
                     else:
                         self.futures.append(future)
                 else:
-                    # TODO commit_index
+                    index = sorted(self.match_indexes.values())[-self.majority]
+                    for i in range(index, self.commit_index, -1):
+                        if self.logs[i].term == self.current_term:
+                            self.logger.info('Leader\'s commit index move forward to %d', i)
+                            self.commit_index = i
+                            # TODO apply to the state machine
+                            break
                     if time.time() - self.last_heartbeat > TIMEOUT_LOWER / 3:
                         self.broadcast_entries()
 
@@ -115,6 +125,7 @@ class Raft:
         self.session = FuturesSession()
         self.futures = collections.deque()
         self.next_indexes = {peer: len(self.logs) for peer in self.peers}
+        self.match_indexes = {peer: -1 for peer in self.peers}
 
     def convert_to_follower(self):
         self.state = STATE_FOLLOWER
@@ -148,7 +159,7 @@ class Raft:
                                    data={
                                        'term': self.current_term, 'leaderId': self.identity,
                                        'prevLogIndex': prev_log_index, 'prevLogTerm': prev_log_term,
-                                       'entries': json.dumps(entries)
+                                       'entries': json.dumps(entries), 'leaderCommit': self.commit_index
                                    },
                                    timeout=0.03)
         future.peer = peer
@@ -175,7 +186,7 @@ class Raft:
         self.logger.info('RequestVote RPC received: %d - %s, granted: %s', term, candidate_id, granted)
         return self.current_term, granted
 
-    def received_append_entries(self, term, leader_id, prev_log_index, prev_log_term, entries):
+    def received_append_entries(self, term, leader_id, prev_log_index, prev_log_term, entries, leader_commit):
         if entries:
             self.logger.info('AppendEntries RPC received: %s', entries)
         with self.lock:
@@ -198,18 +209,25 @@ class Raft:
                 elif self.logs[prev_log_index + 1:prev_log_index + 1 + len(entries)] != entries:
                     self.logger.info('Existing entry conflicts with leader\'s, deleting')
                     self.logs[prev_log_index + 1:] = entries
-                # TODO commit_index
+            index = min(leader_commit, len(self.logs) - 1)
+            if index > self.commit_index:
+                self.logger.info('Follower\'s commit index move forward to %d', index)
+                self.commit_index = index
+                # TODO apply to the state machine
             return self.current_term, True
 
     def received_command(self, command):
         self.logger.info('Client command received: %s', command)
-        with self.lock:
-            if self.state == STATE_LEADER:
+        if self.state == STATE_LEADER:
+            with self.lock:
+                index, term = len(self.logs), self.current_term
                 self.logs.append(Log(self.current_term, command))
                 self.broadcast_entries()
-                return True  # TODO wait
-            elif self.leader_id is not None:
-                result = requests.post('http://' + self.leader_id + '/command', data={'command': command})
-                return result.json().get('success', False)
-            else:
-                return False
+            while self.commit_index < index:
+                time.sleep(0.03)
+            return self.current_term == term
+        elif self.leader_id is not None:
+            result = requests.post('http://' + self.leader_id + '/command', data={'command': command})
+            return result.json().get('success', False)
+        else:
+            return False
