@@ -1,10 +1,11 @@
+import concurrent
+import os
 import threading
-import time
-from os import environ
+from concurrent.futures.thread import ThreadPoolExecutor
 
-from flask import Flask, jsonify, request, json
+from flask import Flask, request, jsonify, json
 
-from raft import Raft
+from raft2 import Raft, loop, RaftRemoteRpcWrapper, Log
 
 app = Flask(__name__)
 
@@ -12,49 +13,48 @@ app = Flask(__name__)
 @app.route('/')
 def hello():
     logs = json.dumps(raft.logs, indent=4)
-    if raft.state == 1:
-        return 'Follower following {} at term {}\n{}'.format(raft.leader_id, raft.current_term, logs)
-    if raft.state == 2:
-        return 'Candidate at term {}\n{}'.format(raft.current_term, logs)
-    return 'Leader at term {}\n{}'.format(raft.current_term, logs)
-
-
-@app.route('/command', methods=['GET', 'POST'])
-def command():
-    success = raft.received_command(
-        request.form['command'])
-    return jsonify(success=success)
+    if raft.state == 'F':
+        return f'Follower following {raft.leader.raft_id} at term {raft.current_term}\n{logs}'
+    if raft.state == 'C':
+        return f'Candidate at term {raft.current_term}\n{logs}'
+    return f'Leader at term {raft.current_term}\n{logs}'
 
 
 @app.route('/appendEntries', methods=['GET', 'POST'])
 def append_entries():
-    term, success = raft.received_append_entries(
-        int(request.form['term']), request.form['leaderId'],
-        int(request.form['prevLogIndex']), int(request.form['prevLogTerm']),
-        json.loads(request.form['entries']), int(request.form['leaderCommit']))
+    entries = [Log(e['term'], e['command']) for e in json.loads(request.form['entries'])]
+    term, success = bridge(
+        raft.received_append_entries(
+            int(request.form['term']), request.form['leaderId'],
+            int(request.form['prevLogIndex']), int(request.form['prevLogTerm']),
+            entries, int(request.form['leaderCommit'])
+        ))
     return jsonify({'term': term, 'success': success})
 
 
 @app.route('/requestVote', methods=['GET', 'POST'])
 def request_vote():
-    term, vote_granted = raft.received_request_vote(
-        int(request.form['term']), request.form['candidateId'],
-        int(request.form['lastLogIndex']), int(request.form['lastLogTerm']))
+    term, vote_granted = bridge(
+        raft.received_request_vote(
+            int(request.form['term']), request.form['candidateId'],
+            int(request.form['lastLogIndex']), int(request.form['lastLogTerm']),
+        ))
     return jsonify({'term': term, 'voteGranted': vote_granted})
 
 
-peers = environ['PEERS']
-raft = Raft(environ['IDENTITY'], peers.split(',') if peers else [], app.logger)
+@app.route('/command', methods=['GET', 'POST'])
+def command():
+    return jsonify(success=bridge(raft.received_command(request.form['command'])))
 
 
-def event_loop():
-    while True:
-        try:
-            raft.tick()
-        except Exception as e:
-            app.logger.error('event loop error: %s', e, exc_info=0)
-        time.sleep(1)
-        # time.sleep(0.1)
+def bridge(coro):
+    origin, future = loop.create_task(coro), concurrent.futures.Future()
+    origin.add_done_callback(lambda _: future.set_result(origin.result()))
+    return future.result()
 
 
-threading.Thread(target=event_loop, daemon=True).start()
+executor = ThreadPoolExecutor(max_workers=20)
+peers = os.environ['PEERS']
+peers = [RaftRemoteRpcWrapper(peer, executor) for peer in (peers.split(',') if peers else [])]
+raft = Raft(os.environ['IDENTITY'], 0.15, 0.3).add_peers(peers)
+threading.Thread(target=loop.run_forever, daemon=True).start()
