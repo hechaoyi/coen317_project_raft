@@ -17,7 +17,7 @@ Log = collections.namedtuple('Log', 'term command')
 
 
 class Raft:
-    def __init__(self, identity, election_timeout_lower=0.15, election_timeout_higher=0.3):
+    def __init__(self, identity, election_timeout_lower=0.15, election_timeout_higher=0.3, delayed_start=0.0):
         self.state = 'F'
         self.last_heartbeat = loop.time()
         self.current_term = 0
@@ -36,7 +36,7 @@ class Raft:
         self.tick_interval = election_timeout_lower / 3
         self.committed_condition = asyncio.Condition()
 
-        loop.create_task(self.tick())
+        loop.call_later(delayed_start, lambda: loop.create_task(self.tick()))
         logger.info(f'{self.id}[{self.state}]: Started')
 
     def add_peers(self, peer):
@@ -71,22 +71,24 @@ class Raft:
             votes, request_futures = 1, [peer.request_vote(self.current_term, self.id,
                                                            last_log_index, last_log_term)
                                          for peer in self.peers]
+            finished = False
             for future in asyncio.as_completed(request_futures):
                 try:
                     term, granted = await future
-                    if self.state != 'C' or await self.check_if_term_updated(term):
-                        return
+                    if finished or self.state != 'C' or await self.check_if_term_updated(term):
+                        finished = True
+                        continue
                     votes += granted
                     if votes >= self.majority:
-                        break
+                        logger.info(f'{self.id}[{self.state}]: Majority reached, converting to leader')
+                        self.state = 'L'
+                        self.next_indexes = {peer: len(self.logs) for peer in self.peers}
+                        self.match_indexes = {peer: -1 for peer in self.peers}
+                        await self.broadcast_entries()
+                        finished = True
+                        continue
                 except Exception as e:
                     logger.info(f'{self.id}[{self.state}]: RequestVote failed: {e}')
-            if votes >= self.majority:
-                logger.info(f'{self.id}[{self.state}]: Majority reached, converting to leader')
-                self.state = 'L'
-                self.next_indexes = {peer: len(self.logs) for peer in self.peers}
-                self.match_indexes = {peer: -1 for peer in self.peers}
-                await self.broadcast_entries()
         except asyncio.TimeoutError as e:
             logger.info(f'{self.id}[{self.state}]: RequestVotes failed: {e}')
 

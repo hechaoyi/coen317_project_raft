@@ -1,7 +1,7 @@
-import concurrent
-import os
-import threading
+from concurrent.futures import Future
 from concurrent.futures.thread import ThreadPoolExecutor
+from os import environ
+from threading import Thread
 
 from flask import Flask, request, jsonify, json
 
@@ -48,13 +48,13 @@ def command():
 
 
 def bridge(coro):
-    origin, future = loop.create_task(coro), concurrent.futures.Future()
+    origin, future = loop.create_task(coro), Future()
     origin.add_done_callback(lambda _: future.set_result(origin.result()))
     return future.result()
 
 
 executor = ThreadPoolExecutor(max_workers=20)
-peers = os.environ['PEERS']
+peers = environ['PEERS']
 peers = [RaftRemoteRpcWrapper(peer, executor) for peer in (peers.split(',') if peers else [])]
-raft = Raft(os.environ['IDENTITY'], 0.15, 0.3).add_peers(peers)
-threading.Thread(target=loop.run_forever, daemon=True).start()
+raft = Raft(environ['IDENTITY'], delayed_start=2.0).add_peers(peers)
+Thread(target=loop.run_forever, daemon=True).start()
