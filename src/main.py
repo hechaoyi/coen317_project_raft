@@ -1,11 +1,10 @@
-from concurrent.futures import Future
 from concurrent.futures.thread import ThreadPoolExecutor
 from os import environ
 from threading import Thread
 
 from flask import Flask, request, jsonify, json
 
-from raft2 import Raft, loop, RaftRemoteRpcWrapper, Log
+from raft2 import Raft, RaftRemoteRpcWrapper, Log
 
 app = Flask(__name__)
 
@@ -23,7 +22,7 @@ def hello():
 @app.route('/appendEntries', methods=['GET', 'POST'])
 def append_entries():
     entries = [Log(e['term'], e['command']) for e in json.loads(request.form['entries'])]
-    term, success = bridge(
+    term, success = raft.bridge_coroutine(
         raft.received_append_entries(
             int(request.form['term']), request.form['leaderId'],
             int(request.form['prevLogIndex']), int(request.form['prevLogTerm']),
@@ -34,7 +33,7 @@ def append_entries():
 
 @app.route('/requestVote', methods=['GET', 'POST'])
 def request_vote():
-    term, vote_granted = bridge(
+    term, vote_granted = raft.bridge_coroutine(
         raft.received_request_vote(
             int(request.form['term']), request.form['candidateId'],
             int(request.form['lastLogIndex']), int(request.form['lastLogTerm']),
@@ -44,17 +43,11 @@ def request_vote():
 
 @app.route('/command', methods=['GET', 'POST'])
 def command():
-    return jsonify(success=bridge(raft.received_command(request.form['command'])))
+    return jsonify(success=raft.bridge_coroutine(raft.received_command(request.form['command'])))
 
 
-def bridge(coro):
-    origin, future = loop.create_task(coro), Future()
-    origin.add_done_callback(lambda _: future.set_result(origin.result()))
-    return future.result()
-
-
-executor = ThreadPoolExecutor(max_workers=20)
-peers = environ['PEERS']
-peers = [RaftRemoteRpcWrapper(peer, executor) for peer in (peers.split(',') if peers else [])]
-raft = Raft(environ['IDENTITY'], delayed_start=2.0).add_peers(peers)
-Thread(target=loop.run_forever, daemon=True).start()
+raft = Raft(environ['IDENTITY'], delayed_start=2.0)
+peers, executor = environ['PEERS'], ThreadPoolExecutor(max_workers=20)
+raft.add_peers([RaftRemoteRpcWrapper(peer, raft.loop, executor)
+                for peer in (peers.split(',') if peers else [])])
+Thread(target=raft.loop.run_forever, daemon=True).start()

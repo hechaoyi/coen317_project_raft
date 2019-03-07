@@ -3,6 +3,8 @@ import collections
 import functools
 import logging
 import random
+from concurrent.futures import Future
+from time import time
 
 import requests
 import simplejson as json
@@ -12,14 +14,13 @@ sh = logging.StreamHandler()
 sh.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] - %(message)s'))
 logger.addHandler(sh)
 logger.setLevel(logging.INFO)
-loop = asyncio.get_event_loop()
 Log = collections.namedtuple('Log', 'term command')
 
 
 class Raft:
     def __init__(self, identity, election_timeout_lower=0.15, election_timeout_higher=0.3, delayed_start=0.0):
         self.state = 'F'
-        self.last_heartbeat = loop.time()
+        self.last_heartbeat = time()
         self.current_term = 0
         self.voted_for = None
         self.leader = None
@@ -36,7 +37,8 @@ class Raft:
         self.tick_interval = election_timeout_lower / 3
         self.committed_condition = asyncio.Condition()
 
-        loop.call_later(delayed_start, lambda: loop.create_task(self.tick()))
+        self.loop = asyncio.get_event_loop()
+        self.loop.call_later(delayed_start, lambda: self.loop.create_task(self.tick()))
         logger.info(f'{self.id}[{self.state}]: Started')
 
     def add_peers(self, peer):
@@ -44,24 +46,29 @@ class Raft:
         self.majority = (len(self.peers) + 1) // 2 + 1
         return self
 
+    def bridge_coroutine(self, coro):
+        origin, future = self.loop.create_task(coro), Future()
+        origin.add_done_callback(lambda _: future.set_result(origin.result()))
+        return future.result()
+
     async def tick(self):
         logger.debug(f'{self.id}[{self.state}]: Ticking')
-        loop.call_later(self.tick_interval, lambda: loop.create_task(self.tick()))
+        self.loop.call_later(self.tick_interval, lambda: self.loop.create_task(self.tick()))
         if self.state == 'F':
-            if loop.time() - self.last_heartbeat > self.random_election_timeout():
+            if time() - self.last_heartbeat > self.random_election_timeout():
                 logger.info(f'{self.id}[{self.state}]: Heartbeat timed out, converting to candidate')
                 await self.convert_to_candidate()
         elif self.state == 'C':
-            if loop.time() - self.last_heartbeat > self.random_election_timeout():
+            if time() - self.last_heartbeat > self.random_election_timeout():
                 logger.info(f'{self.id}[{self.state}]: Election timed out, majority not reached, reelecting')
                 await self.convert_to_candidate()
         elif self.state == 'L':
-            if loop.time() - self.last_heartbeat > self.tick_interval:
+            if time() - self.last_heartbeat > self.tick_interval:
                 await self.broadcast_entries()
 
     async def convert_to_candidate(self):
         self.state = 'C'
-        self.last_heartbeat = loop.time()
+        self.last_heartbeat = time()
         self.current_term += 1
         self.voted_for = self.id
         self.leader = None
@@ -93,7 +100,7 @@ class Raft:
             logger.info(f'{self.id}[{self.state}]: RequestVotes failed: {e}')
 
     async def broadcast_entries(self):
-        self.last_heartbeat = loop.time()
+        self.last_heartbeat = time()
         await asyncio.wait([self.transmit_entries(peer) for peer in self.peers])
 
     async def transmit_entries(self, peer):
@@ -134,7 +141,7 @@ class Raft:
             if self.state != 'F':
                 logger.info(f'{self.id}[{self.state}]: Term updated, converting to follower')
                 self.state = 'F'
-                self.last_heartbeat = loop.time()
+                self.last_heartbeat = time()
                 self.leader = None
             return True
         return False
@@ -154,7 +161,7 @@ class Raft:
             else:
                 granted = True
         if granted:
-            self.last_heartbeat = loop.time()
+            self.last_heartbeat = time()
             self.voted_for = candidate_id
         logger.info(f'{self.id}[{self.state}]: RequestVote received: {term} - {candidate_id}, granted: {granted}')
         return self.current_term, granted
@@ -166,7 +173,7 @@ class Raft:
         if self.state != 'F':
             logger.info(f'{self.id}[{self.state}]: Current leader discovered, converting to follower')
             self.state = 'F'
-        self.last_heartbeat = loop.time()
+        self.last_heartbeat = time()
         self.leader = next(peer for peer in self.peers if peer.raft_id == leader_id)
 
         if prev_log_index >= len(self.logs) or \
@@ -191,7 +198,7 @@ class Raft:
         if self.state == 'L':
             index, term = len(self.logs), self.current_term
             self.logs.append(Log(self.current_term, cmd))
-            _ = loop.create_task(self.broadcast_entries())
+            _ = self.loop.create_task(self.broadcast_entries())
             while self.commit_index < index:
                 async with self.committed_condition:
                     await self.committed_condition.wait()
@@ -223,14 +230,15 @@ class RaftLocalRpcWrapper:
 
 
 class RaftRemoteRpcWrapper:
-    def __init__(self, raft, executor):
+    def __init__(self, raft, loop, executor):
         self.raft_id = raft
+        self.loop = loop
         self.executor = executor
 
     async def request_vote(self, term, candidate_id, last_log_index, last_log_term):
         data = {'term': term, 'candidateId': candidate_id, 'lastLogIndex': last_log_index, 'lastLogTerm': last_log_term}
         func = functools.partial(requests.post, 'http://' + self.raft_id + '/requestVote', data=data, timeout=0.1)
-        result = (await loop.run_in_executor(self.executor, func)).json()
+        result = (await self.loop.run_in_executor(self.executor, func)).json()
         return result.get('term', 0), result.get('voteGranted', False)
 
     async def append_entries(self, term, leader_id, prev_log_index, prev_log_term, entries, leader_commit):
@@ -238,13 +246,13 @@ class RaftRemoteRpcWrapper:
                 'prevLogIndex': prev_log_index, 'prevLogTerm': prev_log_term,
                 'entries': json.dumps(entries), 'leaderCommit': leader_commit}
         func = functools.partial(requests.post, 'http://' + self.raft_id + '/appendEntries', data=data, timeout=0.1)
-        result = (await loop.run_in_executor(self.executor, func)).json()
+        result = (await self.loop.run_in_executor(self.executor, func)).json()
         return result.get('term', 0), result.get('success', False)
 
     async def command(self, cmd):
         func = functools.partial(requests.post,
                                  'http://' + self.raft_id + '/command', data={'command': cmd}, timeout=3)
-        result = (await loop.run_in_executor(self.executor, func)).json()
+        result = (await self.loop.run_in_executor(self.executor, func)).json()
         return result.get('success', False)
 
 
@@ -262,9 +270,9 @@ if __name__ == '__main__':
 
 
     r1, *_ = make_instances(5)
-    loop.call_later(1, lambda: loop.create_task(command(r1, 'a')))
-    loop.call_later(2, lambda: loop.create_task(command(r1, 'b')))
-    loop.call_later(3, lambda: loop.create_task(command(r1, 'c')))
-    loop.call_later(4, lambda: loop.create_task(command(r1, 'd')))
-    loop.call_later(5, lambda: loop.create_task(command(r1, 'e')))
-    loop.run_forever()
+    r1.loop.call_later(1, lambda: r1.loop.create_task(command(r1, 'a')))
+    r1.loop.call_later(2, lambda: r1.loop.create_task(command(r1, 'b')))
+    r1.loop.call_later(3, lambda: r1.loop.create_task(command(r1, 'c')))
+    r1.loop.call_later(4, lambda: r1.loop.create_task(command(r1, 'd')))
+    r1.loop.call_later(5, lambda: r1.loop.create_task(command(r1, 'e')))
+    r1.loop.run_forever()
