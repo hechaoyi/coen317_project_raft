@@ -32,6 +32,7 @@ class Raft:
         # Constants
         self.id = identity
         self.peers = []
+        self.apply_callback = []
         self.majority = 1
         self.random_election_timeout = lambda: random.uniform(election_timeout_lower, election_timeout_higher)
         self.tick_interval = election_timeout_lower / 3
@@ -119,8 +120,10 @@ class Raft:
                 for i in range(index, self.commit_index, -1):
                     if self.logs[i].term == self.current_term:
                         logger.info(f'{self.id}[{self.state}]: Leader\'s commit index move forward to {i}')
+                        oplogs = [self.logs[j].command for j in range(self.commit_index + 1, i + 1)]
+                        for callback in self.apply_callback:
+                            callback(oplogs)
                         self.commit_index = i
-                        # TODO apply to the state machine
                         async with self.committed_condition:
                             self.committed_condition.notify_all()
                         break
@@ -186,8 +189,10 @@ class Raft:
         index = min(leader_commit, len(self.logs) - 1)
         if index > self.commit_index:
             logger.info(f'{self.id}[{self.state}]: Follower\'s commit index move forward to {index}')
+            oplogs = [self.logs[j].command for j in range(self.commit_index + 1, index + 1)]
+            for callback in self.apply_callback:
+                callback(oplogs)
             self.commit_index = index
-            # TODO apply to the state machine
         return self.current_term, True
 
     async def received_command(self, cmd, wait=False):

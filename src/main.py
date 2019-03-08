@@ -4,6 +4,7 @@ from threading import Thread
 
 from flask import Flask, request, jsonify, json
 
+from kv import KVService
 from raft2 import Raft, RaftRemoteRpcWrapper, Log
 
 app = Flask(__name__)
@@ -50,8 +51,27 @@ def command():
     return jsonify({'success': success, 'index': index})
 
 
+@app.route('/get', methods=['GET', 'POST'])
+def get():
+    data = kv.get(request.form['key'])
+    return jsonify({'success': True, 'data': data})
+
+
+@app.route('/put', methods=['GET', 'POST'])
+def put():
+    success = kv.put(request.form['key'], request.form['value'], request.form.get('wait') == '1')
+    return jsonify({'success': success})
+
+
+@app.route('/append', methods=['GET', 'POST'])
+def append():
+    success = kv.append(request.form['key'], request.form['value'], request.form.get('wait') == '1')
+    return jsonify({'success': success})
+
+
 raft = Raft(environ['IDENTITY'], delayed_start=2.0)
 peers, executor = environ['PEERS'], ThreadPoolExecutor(max_workers=20)
 raft.add_peers([RaftRemoteRpcWrapper(peer, raft.loop, executor)
                 for peer in (peers.split(',') if peers else [])])
+kv = KVService(raft)
 Thread(target=raft.loop.run_forever, daemon=True).start()
