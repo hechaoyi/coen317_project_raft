@@ -43,7 +43,11 @@ def request_vote():
 
 @app.route('/command', methods=['GET', 'POST'])
 def command():
-    return jsonify(success=raft.bridge_coroutine(raft.received_command(request.form['command'])))
+    success, index = raft.bridge_coroutine(
+        raft.received_command(
+            request.form['command'], request.form.get('wait') == '1',
+        ))
+    return jsonify({'success': success, 'index': index})
 
 
 raft = Raft(environ['IDENTITY'], delayed_start=2.0)

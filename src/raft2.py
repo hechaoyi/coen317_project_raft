@@ -74,30 +74,27 @@ class Raft:
         self.leader = None
         last_log_index = len(self.logs) - 1
         last_log_term = -1 if last_log_index < 0 else self.logs[last_log_index].term
-        try:
-            votes, request_futures = 1, [peer.request_vote(self.current_term, self.id,
-                                                           last_log_index, last_log_term)
-                                         for peer in self.peers]
-            finished = False
-            for future in asyncio.as_completed(request_futures):
-                try:
-                    term, granted = await future
-                    if finished or self.state != 'C' or await self.check_if_term_updated(term):
-                        finished = True
-                        continue
-                    votes += granted
-                    if votes >= self.majority:
-                        logger.info(f'{self.id}[{self.state}]: Majority reached, converting to leader')
-                        self.state = 'L'
-                        self.next_indexes = {peer: len(self.logs) for peer in self.peers}
-                        self.match_indexes = {peer: -1 for peer in self.peers}
-                        await self.broadcast_entries()
-                        finished = True
-                        continue
-                except Exception as e:
-                    logger.info(f'{self.id}[{self.state}]: RequestVote failed: {e}')
-        except asyncio.TimeoutError as e:
-            logger.info(f'{self.id}[{self.state}]: RequestVotes failed: {e}')
+        votes, request_futures = 1, [peer.request_vote(self.current_term, self.id,
+                                                       last_log_index, last_log_term)
+                                     for peer in self.peers]
+        finished = False
+        for future in asyncio.as_completed(request_futures):
+            try:
+                term, granted = await future
+                if finished or self.state != 'C' or await self.check_if_term_updated(term):
+                    finished = True
+                    continue
+                votes += granted
+                if votes >= self.majority:
+                    logger.info(f'{self.id}[{self.state}]: Majority reached, converting to leader')
+                    self.state = 'L'
+                    self.next_indexes = {peer: len(self.logs) for peer in self.peers}
+                    self.match_indexes = {peer: -1 for peer in self.peers}
+                    await self.broadcast_entries()
+                    finished = True
+                    continue
+            except Exception as e:
+                logger.info(f'{self.id}[{self.state}]: RequestVote failed: {e}')
 
     async def broadcast_entries(self):
         self.last_heartbeat = time()
@@ -118,7 +115,7 @@ class Raft:
             if success:
                 self.next_indexes[peer] = max(self.next_indexes[peer], next_index)
                 self.match_indexes[peer] = max(self.match_indexes[peer], next_index - 1)
-                index = sorted(self.match_indexes.values())[-self.majority]
+                index = sorted(self.match_indexes.values())[1 - self.majority]
                 for i in range(index, self.commit_index, -1):
                     if self.logs[i].term == self.current_term:
                         logger.info(f'{self.id}[{self.state}]: Leader\'s commit index move forward to {i}')
@@ -131,7 +128,7 @@ class Raft:
                 self.next_indexes[peer] = min(self.next_indexes[peer], from_index - 1)
                 await self.transmit_entries(peer)
         except Exception as e:
-            logger.info(f'{self.id}[{self.state}]: AppendEntries failed: {e}')
+            logger.debug(f'{self.id}[{self.state}]: AppendEntries failed: {e}')
 
     async def check_if_term_updated(self, term):
         if term > self.current_term:
@@ -193,20 +190,25 @@ class Raft:
             # TODO apply to the state machine
         return self.current_term, True
 
-    async def received_command(self, cmd):
+    async def received_command(self, cmd, wait=False):
         logger.info(f'{self.id}[{self.state}]: Client command received: {cmd}')
         if self.state == 'L':
             index, term = len(self.logs), self.current_term
-            self.logs.append(Log(self.current_term, cmd))
+            self.logs.append(Log(self.current_term, str(cmd)))
             _ = self.loop.create_task(self.broadcast_entries())
+            if not wait:
+                return True, index
             while self.commit_index < index:
                 async with self.committed_condition:
                     await self.committed_condition.wait()
-            return self.current_term == term
+            if self.logs[index].term == term:
+                return True, index
         elif self.leader is not None:
-            return await self.leader.command(cmd)
-        else:
-            return False
+            try:
+                return await self.leader.command(cmd, wait)
+            except Exception as e:
+                logger.info(f'{self.id}[{self.state}]: Command failed: {e}')
+        return False, -1
 
 
 class RaftLocalRpcWrapper:
@@ -224,9 +226,9 @@ class RaftLocalRpcWrapper:
         return await self.raft.received_append_entries(
             term, leader_id, prev_log_index, prev_log_term, entries, leader_commit)
 
-    async def command(self, cmd):
+    async def command(self, cmd, wait=False):
         await asyncio.sleep(self.blocking_time())
-        return await self.raft.received_command(cmd)
+        return await self.raft.received_command(cmd, wait)
 
 
 class RaftRemoteRpcWrapper:
@@ -249,11 +251,11 @@ class RaftRemoteRpcWrapper:
         result = (await self.loop.run_in_executor(self.executor, func)).json()
         return result.get('term', 0), result.get('success', False)
 
-    async def command(self, cmd):
-        func = functools.partial(requests.post,
-                                 'http://' + self.raft_id + '/command', data={'command': cmd}, timeout=3)
+    async def command(self, cmd, wait=False):
+        data = {'command': cmd, 'wait': '1' if wait else '0'}
+        func = functools.partial(requests.post, 'http://' + self.raft_id + '/command', data=data, timeout=3)
         result = (await self.loop.run_in_executor(self.executor, func)).json()
-        return result.get('success', False)
+        return result.get('success', False), result.get('index', -1)
 
 
 def make_instances(n):
@@ -265,8 +267,7 @@ def make_instances(n):
 
 if __name__ == '__main__':
     async def command(r, c):
-        await r.received_command(c)
-        logger.info(f'command done: {c}')
+        logger.info(f'command done: {await r.received_command(c)}')
 
 
     r1, *_ = make_instances(5)
