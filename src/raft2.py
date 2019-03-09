@@ -18,7 +18,8 @@ Log = collections.namedtuple('Log', 'term command')
 
 
 class Raft:
-    def __init__(self, identity, election_timeout_lower=0.15, election_timeout_higher=0.3, delayed_start=0.0):
+    def __init__(self, identity, election_timeout_lower=0.15, election_timeout_higher=0.3, delayed_start=0.0,
+                 socketio=None, executor=None):
         self.state = 'F'
         self.last_heartbeat = time()
         self.current_term = 0
@@ -35,12 +36,15 @@ class Raft:
         self.apply_callback = []
         self.majority = 1
         self.random_election_timeout = lambda: random.uniform(election_timeout_lower, election_timeout_higher)
-        self.tick_interval = election_timeout_lower / 3
+        self.tick_interval = max(election_timeout_lower / 3, 0.1)
         self.committed_condition = asyncio.Condition()
 
+        self.socketio = socketio
+        self.executor = executor
         self.loop = asyncio.get_event_loop()
         self.loop.call_later(delayed_start, lambda: self.loop.create_task(self.tick()))
         logger.info(f'{self.id}[{self.state}]: Started')
+        self.loop.create_task(self.event({'type': 'stateChanged', 'from': None, 'to': 'F'}))
 
     def add_peers(self, peer):
         self.peers.extend(peer)
@@ -51,6 +55,11 @@ class Raft:
         origin, future = self.loop.create_task(coro), Future()
         origin.add_done_callback(lambda _: future.set_result(origin.result()))
         return future.result()
+
+    async def event(self, event):
+        if self.socketio and self.executor:
+            await self.loop.run_in_executor(self.executor,
+                                            lambda: self.socketio.emit('raftEvent', event))
 
     async def tick(self):
         logger.debug(f'{self.id}[{self.state}]: Ticking')
@@ -68,6 +77,7 @@ class Raft:
                 await self.broadcast_entries()
 
     async def convert_to_candidate(self):
+        await self.event({'type': 'stateChanged', 'from': self.state, 'to': 'C'})
         self.state = 'C'
         self.last_heartbeat = time()
         self.current_term += 1
@@ -78,6 +88,9 @@ class Raft:
         votes, request_futures = 1, [peer.request_vote(self.current_term, self.id,
                                                        last_log_index, last_log_term)
                                      for peer in self.peers]
+        if not request_futures:
+            await self.convert_to_leader()
+            return
         finished = False
         for future in asyncio.as_completed(request_futures):
             try:
@@ -87,19 +100,27 @@ class Raft:
                     continue
                 votes += granted
                 if votes >= self.majority:
-                    logger.info(f'{self.id}[{self.state}]: Majority reached, converting to leader')
-                    self.state = 'L'
-                    self.next_indexes = {peer: len(self.logs) for peer in self.peers}
-                    self.match_indexes = {peer: -1 for peer in self.peers}
-                    await self.broadcast_entries()
+                    await self.convert_to_leader()
                     finished = True
                     continue
             except Exception as e:
                 logger.info(f'{self.id}[{self.state}]: RequestVote failed: {e}')
 
+    async def convert_to_leader(self):
+        logger.info(f'{self.id}[{self.state}]: Majority reached, converting to leader')
+        await self.event({'type': 'stateChanged', 'from': self.state, 'to': 'L'})
+        self.state = 'L'
+        self.next_indexes = {peer: len(self.logs) for peer in self.peers}
+        self.match_indexes = {peer: -1 for peer in self.peers}
+        await self.broadcast_entries()
+
     async def broadcast_entries(self):
+        await self.event({'type': 'broadcastingEntries'})
         self.last_heartbeat = time()
-        await asyncio.wait([self.transmit_entries(peer) for peer in self.peers])
+        if self.peers:
+            await asyncio.wait([self.transmit_entries(peer) for peer in self.peers])
+        elif len(self.logs) - 1 > self.commit_index:
+            await self.leader_commit(len(self.logs) - 1)
 
     async def transmit_entries(self, peer):
         prev_log_index = self.next_indexes[peer] - 1
@@ -119,19 +140,22 @@ class Raft:
                 index = sorted(self.match_indexes.values())[1 - self.majority]
                 for i in range(index, self.commit_index, -1):
                     if self.logs[i].term == self.current_term:
-                        logger.info(f'{self.id}[{self.state}]: Leader\'s commit index move forward to {i}')
-                        oplogs = [self.logs[j].command for j in range(self.commit_index + 1, i + 1)]
-                        for callback in self.apply_callback:
-                            callback(oplogs)
-                        self.commit_index = i
-                        async with self.committed_condition:
-                            self.committed_condition.notify_all()
+                        await self.leader_commit(i)
                         break
             else:
                 self.next_indexes[peer] = min(self.next_indexes[peer], from_index - 1)
                 await self.transmit_entries(peer)
         except Exception as e:
             logger.debug(f'{self.id}[{self.state}]: AppendEntries failed: {e}')
+
+    async def leader_commit(self, index):
+        logger.info(f'{self.id}[{self.state}]: Leader\'s commit index move forward to {index}')
+        oplogs = [self.logs[j].command for j in range(self.commit_index + 1, index + 1)]
+        for callback in self.apply_callback:
+            callback(oplogs)
+        self.commit_index = index
+        async with self.committed_condition:
+            self.committed_condition.notify_all()
 
     async def check_if_term_updated(self, term):
         if term > self.current_term:
@@ -140,6 +164,7 @@ class Raft:
             self.voted_for = None
             if self.state != 'F':
                 logger.info(f'{self.id}[{self.state}]: Term updated, converting to follower')
+                await self.event({'type': 'stateChanged', 'from': self.state, 'to': 'F'})
                 self.state = 'F'
                 self.last_heartbeat = time()
                 self.leader = None

@@ -10,6 +10,9 @@ flask = "*"
 simplejson = "*"
 requests-futures = "*"
 pytest = "*"
+flask-graphql = "*"
+graphene = "*"
+flask-socketio = "*"
 
 [requires]
 python_version = "3.7"

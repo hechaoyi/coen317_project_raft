@@ -2,12 +2,16 @@ from concurrent.futures.thread import ThreadPoolExecutor
 from os import environ
 from threading import Thread
 
+import graphene
 from flask import Flask, request, jsonify, json
+from flask_graphql import GraphQLView
+from flask_socketio import SocketIO
 
 from kv import KVService
 from raft2 import Raft, RaftRemoteRpcWrapper, Log
 
 app = Flask(__name__)
+socketio = SocketIO(app)
 
 
 @app.route('/')
@@ -69,9 +73,37 @@ def append():
     return jsonify({'success': success})
 
 
-raft = Raft(environ['IDENTITY'], delayed_start=2.0)
+# GraphQL
+class Query(graphene.ObjectType):
+    get = graphene.String(key=graphene.String(required=True))
+    put = graphene.Boolean(key=graphene.String(required=True),
+                           value=graphene.String(required=True),
+                           wait=graphene.Boolean(default_value=False))
+    append = graphene.Boolean(key=graphene.String(required=True),
+                              value=graphene.String(required=True),
+                              wait=graphene.Boolean(default_value=False))
+
+    def resolve_get(self, _, key):
+        return kv.get(key)
+
+    def resolve_put(self, _, key, value, wait):
+        return kv.put(key, value, wait)
+
+    def resolve_append(self, _, key, value, wait):
+        return kv.append(key, value, wait)
+
+
+view = GraphQLView.as_view('graphql', schema=graphene.Schema(query=Query), graphiql=True)
+app.add_url_rule('/graphql', view_func=view)
+# GraphQL
+
+
 peers, executor = environ['PEERS'], ThreadPoolExecutor(max_workers=20)
+raft = Raft(environ['IDENTITY'], 3, 5, delayed_start=2.0, socketio=socketio, executor=executor)
 raft.add_peers([RaftRemoteRpcWrapper(peer, raft.loop, executor)
                 for peer in (peers.split(',') if peers else [])])
 kv = KVService(raft)
 Thread(target=raft.loop.run_forever, daemon=True).start()
+
+if __name__ == '__main__':
+    socketio.run(app)
