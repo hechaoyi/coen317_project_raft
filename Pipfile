@@ -13,7 +13,6 @@ pytest = "*"
 flask-graphql = "*"
 graphene = "*"
 flask-socketio = "*"
-eventlet = "*"
 
 [requires]
 python_version = "3.7"
