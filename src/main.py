@@ -6,6 +6,7 @@ from threading import Thread
 
 import graphene
 from flask import Flask, request, jsonify, json
+from flask_cors import CORS
 from flask_graphql import GraphQLView
 from flask_socketio import SocketIO
 
@@ -13,6 +14,7 @@ from kv import KVService
 from raft2 import Raft, RaftRemoteRpcWrapper, Log
 
 app = Flask(__name__)
+CORS(app)
 socketio = SocketIO(app)
 
 
