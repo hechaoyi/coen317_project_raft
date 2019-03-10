@@ -77,10 +77,7 @@ def connected(raft):
 
 
 def run_for(sec):
-    async def wait():
-        await asyncio.sleep(sec)
-
-    asyncio.get_event_loop().run_until_complete(wait())
+    asyncio.get_event_loop().run_until_complete(asyncio.sleep(sec))
 
 
 def run_until(func, interval=0.1, timeout=5):

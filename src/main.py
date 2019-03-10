@@ -1,3 +1,5 @@
+import asyncio
+import time
 from concurrent.futures.thread import ThreadPoolExecutor
 from os import environ
 from threading import Thread
@@ -48,16 +50,16 @@ def request_vote():
 
 @app.route('/turn_off', methods=['GET', 'POST'])
 def turn_off():
-    term, status = raft.bridge_coroutine(
-        raft.turn_off())
-    return jsonify({'term': term, 'status': status})
+    global failure
+    failure = True
+    return jsonify({'term': raft.current_term, 'status': 'off'})
 
 
 @app.route('/turn_on', methods=['GET', 'POST'])
 def turn_on():
-    term, status = raft.bridge_coroutine(
-        raft.turn_on())
-    return jsonify({'term': term, 'status': status})
+    global failure
+    failure = False
+    return jsonify({'term': raft.current_term, 'status': 'on'})
 
 
 @app.route('/command', methods=['GET', 'POST'])
@@ -119,7 +121,18 @@ raft = Raft(environ['IDENTITY'],
 raft.add_peers([RaftRemoteRpcWrapper(peer, raft.loop, executor)
                 for peer in (peers.split(',') if peers else [])])
 kv = KVService(raft)
-Thread(target=raft.loop.run_forever, daemon=True).start()
+failure = False
+
+
+def asyncio_event_loop_driver():
+    while True:
+        if failure:
+            time.sleep(0.1)
+        else:
+            raft.loop.run_until_complete(asyncio.sleep(0.1))
+
+
+Thread(target=asyncio_event_loop_driver, daemon=True).start()
 
 if __name__ == '__main__':
     socketio.run(app, '0.0.0.0', 80)
