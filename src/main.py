@@ -98,6 +98,14 @@ def append():
     return jsonify({'success': kv.append(key, value, wait == '1')})
 
 
+@app.route('/inspect', methods=['GET', 'POST'])
+def inspect():
+    return jsonify({'success': True, 'data': {
+        'id': raft.id, 'state': raft.state, 'term': raft.current_term,
+        'commitIndex': raft.commit_index, 'logs': raft.logs, 'on/off': not failure
+    }})
+
+
 # GraphQL
 class Query(graphene.ObjectType):
     get = graphene.String(key=graphene.String(required=True))
