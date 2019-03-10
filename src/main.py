@@ -45,6 +45,17 @@ def request_vote():
         ))
     return jsonify({'term': term, 'voteGranted': vote_granted})
 
+@app.route('/turn_off', methods=['GET', 'POST'])
+def turn_off():
+    term, status = raft.bridge_coroutine(
+        raft.turn_off())
+    return jsonify({'term': term, 'status': status})
+
+@app.route('/turn_on', methods=['GET', 'POST'])
+def turn_on():
+    term, status = raft.bridge_coroutine(
+        raft.turn_on())
+    return jsonify({'term': term, 'status': status})
 
 @app.route('/command', methods=['GET', 'POST'])
 def command():
