@@ -37,7 +37,7 @@ class Raft:
         self.majority = 1
         self.random_election_timeout = lambda: random.uniform(election_timeout_lower, election_timeout_higher)
         self.heartbeat_interval = election_timeout_lower / 3
-        self.ticking_interval = max(election_timeout_lower / 3, 0.05)
+        self.ticking_interval = min(election_timeout_lower / 3, 0.05)
         self.committed_condition = asyncio.Condition()
         self.failure = False
 
