@@ -250,8 +250,10 @@ class Raft:
             logger.info(f'{self.id}[{self.state}]: Client command received: {cmd}')
             if self.state == 'L':
                 index, term = len(self.logs), self.current_term
+                await self.event({'type': 'commandReceived', 'cmd': cmd, 'index': index})
                 self.logs.append(Log(self.current_term, str(cmd)))
-                _ = self.loop.create_task(self.broadcast_entries())
+                # broadcast to followers with next heartbeat
+                # _ = self.loop.create_task(self.broadcast_entries())
                 if not wait:
                     return True, index
                 while self.commit_index < index:
