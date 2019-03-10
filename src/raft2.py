@@ -46,7 +46,9 @@ class Raft:
         self.loop = asyncio.get_event_loop()
         self.loop.call_later(delayed_start, lambda: self.loop.create_task(self.tick()))
         logger.info(f'{self.id}[{self.state}]: Started')
-        self.loop.create_task(self.event({'type': 'stateChanged', 'from': None, 'to': 'F'}))
+        self.election_timeout_once = self.random_election_timeout()
+        self.loop.create_task(self.event({'type': 'stateChanged', 'from': None, 'to': 'F',
+                                          'timer': self.election_timeout_once}))
 
     def add_peers(self, peer):
         self.peers.extend(peer)
@@ -76,11 +78,11 @@ class Raft:
             logger.debug(f'{self.id}[{self.state}]: Ticking')
             self.loop.call_later(self.ticking_interval, lambda: self.loop.create_task(self.tick()))
             if self.state == 'F':
-                if time() - self.last_heartbeat > self.random_election_timeout():
+                if time() - self.last_heartbeat > self.election_timeout_once:
                     logger.info(f'{self.id}[{self.state}]: Heartbeat timed out, converting to candidate')
                     await self.convert_to_candidate()
             elif self.state == 'C':
-                if time() - self.last_heartbeat > self.random_election_timeout():
+                if time() - self.last_heartbeat > self.election_timeout_once:
                     logger.info(f'{self.id}[{self.state}]: Election timed out, majority not reached, reelecting')
                     await self.convert_to_candidate()
             elif self.state == 'L':
@@ -88,7 +90,8 @@ class Raft:
                     await self.broadcast_entries()
 
     async def convert_to_candidate(self):
-        await self.event({'type': 'stateChanged', 'from': self.state, 'to': 'C'})
+        self.election_timeout_once = self.random_election_timeout()
+        await self.event({'type': 'stateChanged', 'from': self.state, 'to': 'C', 'timer': self.election_timeout_once})
         self.state = 'C'
         self.last_heartbeat = time()
         self.current_term += 1
@@ -175,7 +178,9 @@ class Raft:
             self.voted_for = None
             if self.state != 'F':
                 logger.info(f'{self.id}[{self.state}]: Term updated, converting to follower')
-                await self.event({'type': 'stateChanged', 'from': self.state, 'to': 'F'})
+                self.election_timeout_once = self.random_election_timeout()
+                await self.event({'type': 'stateChanged', 'from': self.state, 'to': 'F',
+                                  'timer': self.election_timeout_once})
                 self.state = 'F'
                 self.last_heartbeat = time()
                 self.leader = None
@@ -198,6 +203,7 @@ class Raft:
                 else:
                     granted = True
             if granted:
+                self.election_timeout_once = self.random_election_timeout()
                 self.last_heartbeat = time()
                 self.voted_for = candidate_id
             logger.info(f'{self.id}[{self.state}]: RequestVote received: {term} - {candidate_id}, granted: {granted}')
@@ -213,6 +219,8 @@ class Raft:
             if self.state != 'F':
                 logger.info(f'{self.id}[{self.state}]: Current leader discovered, converting to follower')
                 self.state = 'F'
+            self.election_timeout_once = self.random_election_timeout()
+            await self.event({'type': 'heartbeatReceived', 'timer': self.election_timeout_once})
             self.last_heartbeat = time()
             self.leader = next(peer for peer in self.peers if peer.raft_id == leader_id)
 
