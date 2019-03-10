@@ -74,7 +74,7 @@ def command():
 @app.route('/get', methods=['GET', 'POST'])
 def get():
     key = request.args.get('key') or request.form.get('key')
-    if not key: raise Exception('\'key\' not given')
+    if not key: return jsonify({'success': False, 'message': '\'key\' not given'})
     return jsonify({'success': True, 'data': kv.get(key)})
 
 
@@ -83,8 +83,8 @@ def put():
     key = request.args.get('key') or request.form.get('key')
     value = request.args.get('value') or request.form.get('value')
     wait = request.args.get('wait') or request.form.get('wait')
-    if not key: raise Exception('\'key\' not given')
-    if not value: raise Exception('\'value\' not given')
+    if not key: return jsonify({'success': False, 'message': '\'key\' not given'})
+    if not value: return jsonify({'success': False, 'message': '\'value\' not given'})
     return jsonify({'success': kv.put(key, value, wait == '1')})
 
 
@@ -93,8 +93,8 @@ def append():
     key = request.args.get('key') or request.form.get('key')
     value = request.args.get('value') or request.form.get('value')
     wait = request.args.get('wait') or request.form.get('wait')
-    if not key: raise Exception('\'key\' not given')
-    if not value: raise Exception('\'value\' not given')
+    if not key: return jsonify({'success': False, 'message': '\'key\' not given'})
+    if not value: return jsonify({'success': False, 'message': '\'value\' not given'})
     return jsonify({'success': kv.append(key, value, wait == '1')})
 
 
