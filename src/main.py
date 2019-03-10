@@ -73,20 +73,29 @@ def command():
 
 @app.route('/get', methods=['GET', 'POST'])
 def get():
-    data = kv.get(request.form['key'])
-    return jsonify({'success': True, 'data': data})
+    key = request.args.get('key') or request.form.get('key')
+    if not key: raise Exception('\'key\' not given')
+    return jsonify({'success': True, 'data': kv.get(key)})
 
 
 @app.route('/put', methods=['GET', 'POST'])
 def put():
-    success = kv.put(request.form['key'], request.form['value'], request.form.get('wait') == '1')
-    return jsonify({'success': success})
+    key = request.args.get('key') or request.form.get('key')
+    value = request.args.get('value') or request.form.get('value')
+    wait = request.args.get('wait') or request.form.get('wait')
+    if not key: raise Exception('\'key\' not given')
+    if not value: raise Exception('\'value\' not given')
+    return jsonify({'success': kv.put(key, value, wait == '1')})
 
 
 @app.route('/append', methods=['GET', 'POST'])
 def append():
-    success = kv.append(request.form['key'], request.form['value'], request.form.get('wait') == '1')
-    return jsonify({'success': success})
+    key = request.args.get('key') or request.form.get('key')
+    value = request.args.get('value') or request.form.get('value')
+    wait = request.args.get('wait') or request.form.get('wait')
+    if not key: raise Exception('\'key\' not given')
+    if not value: raise Exception('\'value\' not given')
+    return jsonify({'success': kv.append(key, value, wait == '1')})
 
 
 # GraphQL
