@@ -45,17 +45,20 @@ def request_vote():
         ))
     return jsonify({'term': term, 'voteGranted': vote_granted})
 
+
 @app.route('/turn_off', methods=['GET', 'POST'])
 def turn_off():
     term, status = raft.bridge_coroutine(
         raft.turn_off())
     return jsonify({'term': term, 'status': status})
 
+
 @app.route('/turn_on', methods=['GET', 'POST'])
 def turn_on():
     term, status = raft.bridge_coroutine(
         raft.turn_on())
     return jsonify({'term': term, 'status': status})
+
 
 @app.route('/command', methods=['GET', 'POST'])
 def command():
@@ -110,11 +113,13 @@ app.add_url_rule('/graphql', view_func=view)
 
 
 peers, executor = environ['PEERS'], ThreadPoolExecutor(max_workers=20)
-raft = Raft(environ['IDENTITY'], 3, 5, delayed_start=2.0, socketio=socketio, executor=executor)
+raft = Raft(environ['IDENTITY'],
+            election_timeout_lower=3, election_timeout_higher=5, delayed_start=2.0,
+            socketio=socketio, executor=executor)
 raft.add_peers([RaftRemoteRpcWrapper(peer, raft.loop, executor)
                 for peer in (peers.split(',') if peers else [])])
 kv = KVService(raft)
 Thread(target=raft.loop.run_forever, daemon=True).start()
 
 if __name__ == '__main__':
-    socketio.run(app)
+    socketio.run(app, '0.0.0.0', 80)

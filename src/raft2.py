@@ -36,7 +36,8 @@ class Raft:
         self.apply_callback = []
         self.majority = 1
         self.random_election_timeout = lambda: random.uniform(election_timeout_lower, election_timeout_higher)
-        self.tick_interval = max(election_timeout_lower / 3, 0.1)
+        self.heartbeat_interval = election_timeout_lower / 3
+        self.ticking_interval = max(election_timeout_lower / 3, 0.05)
         self.committed_condition = asyncio.Condition()
         self.failure = False
 
@@ -73,7 +74,7 @@ class Raft:
     async def tick(self):
         if not self.failure:
             logger.debug(f'{self.id}[{self.state}]: Ticking')
-            self.loop.call_later(self.tick_interval, lambda: self.loop.create_task(self.tick()))
+            self.loop.call_later(self.ticking_interval, lambda: self.loop.create_task(self.tick()))
             if self.state == 'F':
                 if time() - self.last_heartbeat > self.random_election_timeout():
                     logger.info(f'{self.id}[{self.state}]: Heartbeat timed out, converting to candidate')
@@ -83,7 +84,7 @@ class Raft:
                     logger.info(f'{self.id}[{self.state}]: Election timed out, majority not reached, reelecting')
                     await self.convert_to_candidate()
             elif self.state == 'L':
-                if time() - self.last_heartbeat > self.tick_interval:
+                if time() - self.last_heartbeat > self.heartbeat_interval:
                     await self.broadcast_entries()
 
     async def convert_to_candidate(self):
@@ -287,6 +288,7 @@ class RaftLocalRpcWrapper:
         # no need to sleep 
         return await self.raft.turn_off()
 
+
 class RaftRemoteRpcWrapper:
     def __init__(self, raft, loop, executor):
         self.raft_id = raft
@@ -295,7 +297,7 @@ class RaftRemoteRpcWrapper:
 
     async def request_vote(self, term, candidate_id, last_log_index, last_log_term):
         data = {'term': term, 'candidateId': candidate_id, 'lastLogIndex': last_log_index, 'lastLogTerm': last_log_term}
-        func = functools.partial(requests.post, 'http://' + self.raft_id + '/requestVote', data=data, timeout=0.1)
+        func = functools.partial(requests.post, 'http://' + self.raft_id + '/requestVote', data=data, timeout=1)
         result = (await self.loop.run_in_executor(self.executor, func)).json()
         return result.get('term', 0), result.get('voteGranted', False)
 
@@ -303,7 +305,7 @@ class RaftRemoteRpcWrapper:
         data = {'term': term, 'leaderId': leader_id,
                 'prevLogIndex': prev_log_index, 'prevLogTerm': prev_log_term,
                 'entries': json.dumps(entries), 'leaderCommit': leader_commit}
-        func = functools.partial(requests.post, 'http://' + self.raft_id + '/appendEntries', data=data, timeout=0.1)
+        func = functools.partial(requests.post, 'http://' + self.raft_id + '/appendEntries', data=data, timeout=1)
         result = (await self.loop.run_in_executor(self.executor, func)).json()
         return result.get('term', 0), result.get('success', False)
 
@@ -312,8 +314,6 @@ class RaftRemoteRpcWrapper:
         func = functools.partial(requests.post, 'http://' + self.raft_id + '/command', data=data, timeout=3)
         result = (await self.loop.run_in_executor(self.executor, func)).json()
         return result.get('success', False), result.get('index', -1)
-
-
 
 
 def make_instances(n):
