@@ -21,7 +21,7 @@ class Raft:
     def __init__(self, identity, election_timeout_lower=0.15, election_timeout_higher=0.3, delayed_start=0.0,
                  socketio=None, executor=None):
         self.state = 'F'
-        self.last_heartbeat = time()
+        self.last_heartbeat = time() + delayed_start
         self.current_term = 0
         self.voted_for = None
         self.leader = None
@@ -47,8 +47,8 @@ class Raft:
         self.loop.call_later(delayed_start, lambda: self.loop.create_task(self.tick()))
         logger.info(f'{self.id}[{self.state}]: Started')
         self.election_timeout_once = self.random_election_timeout()
-        self.loop.create_task(self.event({'type': 'stateChanged', 'from': None, 'to': 'F',
-                                          'timer': self.election_timeout_once}))
+        self.loop.call_later(delayed_start, lambda: self.loop.create_task(self.event(
+            {'type': 'stateChanged', 'from': None, 'to': 'F', 'timer': self.election_timeout_once})))
 
     def add_peers(self, peer):
         self.peers.extend(peer)

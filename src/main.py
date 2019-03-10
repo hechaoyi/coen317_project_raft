@@ -135,7 +135,7 @@ app.add_url_rule('/graphql', view_func=view)
 
 peers, executor = environ['PEERS'], ThreadPoolExecutor(max_workers=20)
 raft = Raft(environ['IDENTITY'],
-            election_timeout_lower=3, election_timeout_higher=5, delayed_start=2.0,
+            election_timeout_lower=3, election_timeout_higher=5, delayed_start=5,
             socketio=socketio, executor=executor)
 raft.add_peers([RaftRemoteRpcWrapper(peer, raft.loop, executor)
                 for peer in (peers.split(',') if peers else [])])
