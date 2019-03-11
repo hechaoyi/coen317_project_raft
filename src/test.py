@@ -146,7 +146,7 @@ def one(cluster, command, expected_count):
             raft, start[0] = cluster[start[0] % len(cluster)], start[0] + 1
             if not connected(raft):
                 continue
-            success, index = await raft.received_command(command)
+            success, index, _ = await raft.received_command(command)
             if success:
                 break
         if index > -1:

@@ -66,18 +66,20 @@ def turn_on():
 
 @app.route('/command', methods=['GET', 'POST'])
 def command():
-    success, index = raft.bridge_coroutine(
+    success, index, result = raft.bridge_coroutine(
         raft.received_command(
             request.form['command'], request.form.get('wait') == '1',
         ))
-    return jsonify({'success': success, 'index': index})
+    return jsonify({'success': success, 'index': index, 'result': result})
 
 
 @app.route('/get', methods=['GET', 'POST'])
 def get():
     key = request.args.get('key') or request.form.get('key')
+    wait = request.args.get('wait') or request.form.get('wait')
     if not key: return jsonify({'success': False, 'message': '\'key\' not given'})
-    return jsonify({'success': True, 'data': kv.get(key)})
+    success, result = kv.get(key, wait == '1')
+    return jsonify({'success': success, 'data': result})
 
 
 @app.route('/put', methods=['GET', 'POST'])
@@ -109,8 +111,15 @@ def inspect():
 
 
 # GraphQL
+class Result(graphene.ObjectType):
+    success = graphene.Boolean()
+    data = graphene.String()
+
+
 class Query(graphene.ObjectType):
-    get = graphene.String(key=graphene.String(required=True))
+    get = graphene.Field(Result,
+                         key=graphene.String(required=True),
+                         wait=graphene.Boolean(default_value=False))
     put = graphene.Boolean(key=graphene.String(required=True),
                            value=graphene.String(required=True),
                            wait=graphene.Boolean(default_value=False))
@@ -118,8 +127,9 @@ class Query(graphene.ObjectType):
                               value=graphene.String(required=True),
                               wait=graphene.Boolean(default_value=False))
 
-    def resolve_get(self, _, key):
-        return kv.get(key)
+    def resolve_get(self, _, key, wait):
+        success, result = kv.get(key, wait)
+        return Result(success=success, data=result)
 
     def resolve_put(self, _, key, value, wait):
         return kv.put(key, value, wait)

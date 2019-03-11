@@ -38,7 +38,8 @@ class Raft:
         self.random_election_timeout = lambda: random.uniform(election_timeout_lower, election_timeout_higher)
         self.heartbeat_interval = election_timeout_lower / 3
         self.ticking_interval = min(election_timeout_lower / 3, 0.05)
-        self.committed_condition = asyncio.Condition()
+        # self.committed_condition = asyncio.Condition()
+        self.committed_futures = {}
         self.failure = False
 
         self.socketio = socketio
@@ -164,12 +165,13 @@ class Raft:
 
     async def leader_commit(self, index):
         logger.info(f'{self.id}[{self.state}]: Leader\'s commit index move forward to {index}')
-        oplogs = [self.logs[j].command for j in range(self.commit_index + 1, index + 1)]
+        oplogs = [(self.logs[j].command, self.committed_futures.pop(j, None))
+                  for j in range(self.commit_index + 1, index + 1)]
         for callback in self.apply_callback:
             callback(oplogs)
         self.commit_index = index
-        async with self.committed_condition:
-            self.committed_condition.notify_all()
+        # async with self.committed_condition:
+        #     self.committed_condition.notify_all()
 
     async def check_if_term_updated(self, term):
         if term > self.current_term:
@@ -237,7 +239,7 @@ class Raft:
             index = min(leader_commit, len(self.logs) - 1)
             if index > self.commit_index:
                 logger.info(f'{self.id}[{self.state}]: Follower\'s commit index move forward to {index}')
-                oplogs = [self.logs[j].command for j in range(self.commit_index + 1, index + 1)]
+                oplogs = [(self.logs[j].command, None) for j in range(self.commit_index + 1, index + 1)]
                 for callback in self.apply_callback:
                     callback(oplogs)
                 self.commit_index = index
@@ -255,20 +257,23 @@ class Raft:
                 # broadcast to followers with next heartbeat
                 # _ = self.loop.create_task(self.broadcast_entries())
                 if not wait:
-                    return True, index
-                while self.commit_index < index:
-                    async with self.committed_condition:
-                        await self.committed_condition.wait()
+                    return True, index, None
+                # while self.commit_index < index:
+                #     async with self.committed_condition:
+                #         await self.committed_condition.wait()
+                future = self.loop.create_future()
+                self.committed_futures[index] = future
+                result = await future
                 if self.logs[index].term == term:
-                    return True, index
+                    return True, index, result
             elif self.leader is not None:
                 try:
                     return await self.leader.command(cmd, wait)
                 except Exception as e:
                     logger.info(f'{self.id}[{self.state}]: Command failed: {e}')
-            return False, -1
+            return False, -1, None
         else:
-            return False, -1
+            return False, -1, None
 
 
 class RaftLocalRpcWrapper:
@@ -323,7 +328,7 @@ class RaftRemoteRpcWrapper:
         data = {'command': cmd, 'wait': '1' if wait else '0'}
         func = functools.partial(requests.post, 'http://' + self.raft_id + '/command', data=data, timeout=3)
         result = (await self.loop.run_in_executor(self.executor, func)).json()
-        return result.get('success', False), result.get('index', -1)
+        return result.get('success', False), result.get('index', -1), result.get('result', None)
 
 
 def make_instances(n):

@@ -46,7 +46,7 @@ def test_fail_no_agree():
         connect(cluster, cluster[(idx + 2) % 5], False)
         connect(cluster, cluster[(idx + 3) % 5], False)
 
-        ok, index = run_coro(leader.received_command(str(random())))
+        ok, index, _ = run_coro(leader.received_command(str(random())))
         assert ok
         assert index == 1
 
@@ -63,7 +63,7 @@ def test_fail_no_agree():
         # among their own ranks, forgetting index 2.
         run_for(1)
         leader2 = check_one_leader(cluster)
-        ok, index = run_coro(leader2.received_command(str(random())))
+        ok, index, _ = run_coro(leader2.received_command(str(random())))
         assert ok
         assert 1 <= index <= 2
 
