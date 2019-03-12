@@ -19,7 +19,7 @@ Log = collections.namedtuple('Log', 'term command')
 
 class Raft:
     def __init__(self, identity, election_timeout_lower=0.15, election_timeout_higher=0.3, delayed_start=0.0,
-                 socketio=None, executor=None):
+                 socketio=None, executor=None, delayed_vote_granting=False):
         self.state = 'F'
         self.last_heartbeat = time() + delayed_start
         self.current_term = 0
@@ -41,6 +41,7 @@ class Raft:
         # self.committed_condition = asyncio.Condition()
         self.committed_futures = {}
         self.failure = False
+        self.delayed_vote_granting = delayed_vote_granting
 
         self.socketio = socketio
         self.executor = executor
@@ -110,7 +111,7 @@ class Raft:
         for future in asyncio.as_completed(request_futures):
             try:
                 term, granted = await future
-                if finished or self.state != 'C' or await self.check_if_term_updated(term):
+                if await self.check_if_term_updated(term) or finished or self.state != 'C' or term < self.current_term:
                     finished = True
                     continue
                 votes += granted
@@ -208,6 +209,10 @@ class Raft:
                 self.election_timeout_once = self.random_election_timeout()
                 self.last_heartbeat = time()
                 self.voted_for = candidate_id
+                if self.delayed_vote_granting:
+                    delayed_time = random.uniform(max(self.heartbeat_interval - 2, 0), self.heartbeat_interval)
+                    logger.info(f'{self.id}[{self.state}]: Vote granting will be delayed for {delayed_time}s')
+                    await asyncio.sleep(delayed_time)
             logger.info(f'{self.id}[{self.state}]: RequestVote received: {term} - {candidate_id}, granted: {granted}')
             return self.current_term, granted
         else:
@@ -312,7 +317,7 @@ class RaftRemoteRpcWrapper:
 
     async def request_vote(self, term, candidate_id, last_log_index, last_log_term):
         data = {'term': term, 'candidateId': candidate_id, 'lastLogIndex': last_log_index, 'lastLogTerm': last_log_term}
-        func = functools.partial(requests.post, 'http://' + self.raft_id + '/requestVote', data=data, timeout=1)
+        func = functools.partial(requests.post, 'http://' + self.raft_id + '/requestVote', data=data, timeout=10)
         result = (await self.loop.run_in_executor(self.executor, func)).json()
         return result.get('term', 0), result.get('voteGranted', False)
 
@@ -326,7 +331,7 @@ class RaftRemoteRpcWrapper:
 
     async def command(self, cmd, wait=False):
         data = {'command': cmd, 'wait': '1' if wait else '0'}
-        func = functools.partial(requests.post, 'http://' + self.raft_id + '/command', data=data, timeout=3)
+        func = functools.partial(requests.post, 'http://' + self.raft_id + '/command', data=data, timeout=10)
         result = (await self.loop.run_in_executor(self.executor, func)).json()
         return result.get('success', False), result.get('index', -1), result.get('result', None)
 
